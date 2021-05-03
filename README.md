@@ -17,5 +17,5 @@ intelligence are set to bring.
 Based on the computer simulation run on NetLogo, if the Counterbalance
 Economics model was introduced into the Australian, UK, US, Swiss or
 German economies, between 2006 and 2018, these economies would
-have increased their overall GDP by around 4 per cent and reduced their
+have increased their overall GDP by around 5 per cent and reduced their
 level of inequality from an average of 0.33 down to 0.08.
