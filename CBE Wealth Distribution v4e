@@ -1,0 +1,4763 @@
+;; (c) Peter Malliaros, 2021
+;; Impact to Inequality of introducing the Counterbalance Economics System into the Wealth Distribution Model
+
+breed [ employees employee ]   ;; defines agentset and agent
+
+globals        ;; general parameters accessible by all agents from across the world
+[
+  max-grain    ;; maximum amount any patch can hold
+  lorenz-points ;; variable required to calculate the lorenz curve
+  gini-index-reserve ;; resets the value to allow recalculation
+  initial-bottom-50-inc ;;
+
+
+]
+
+patches-own
+[
+  grain-here      ; the current amount of grain on this patch
+  max-grain-here  ; the maximum amount of grain this patch can hold
+ ]
+
+employees-own
+[
+  age              ; how old an employee is
+  wealth           ; the total amount of grain an employee has collected
+  income           ; the amount of grain an employee has harvested at each time interval
+  life-expectancy  ; maximum age that an employee can reach
+  metabolism       ; how much grain an employee eats each time
+  vision           ; how many patches ahead an employee can see
+  Tax-Collected    ; Amount of income reduced by tax
+  Welfare          ; Amount received as welfare payment
+]
+
+;;;
+;;; SETUP AND HELPERS
+;;;
+
+to setup
+  clear-all
+  ;;
+  set max-grain Country-AWE ;; sets up the maximum amount of grain that a patch can hold
+  setup-patches    ;; call procedures to set up patches
+  setup-employees  ;; call procedures to set up employees
+  update-lorenz-and-gini ;; updates the lorenz and gini outputs
+  reset-ticks
+end
+
+;; set up the initial amounts of grain each patch has
+to setup-patches
+  ;; give some patches the highest amount of grain possible --
+  ;; these patches are the "best land"
+  ask patches
+    [ set max-grain-here 0
+      if (random-float 100.0) <= percent-best-land
+        [ set max-grain-here max-grain
+          set grain-here max-grain-here ] ]
+  ;; spread that grain around the window a little and put a little back
+  ;; into the patches that are the "best land" found above
+  repeat 5
+    [ ask patches with [max-grain-here != 0]
+        [ set grain-here max-grain-here ]
+      diffuse grain-here 0.25 ]
+  repeat 10
+    [ diffuse grain-here 0.25 ]          ;; spread the grain around some more
+  ask patches
+    [ set grain-here floor grain-here    ;; round grain levels to whole numbers
+      set max-grain-here grain-here      ;; initial grain level is also maximum
+      recolor-patch ]
+end
+
+to recolor-patch  ;; patch procedure -- use color to indicate grain level
+  set pcolor scale-color yellow grain-here 0 max-grain
+end
+
+;; set up the initial values for the turtle variables
+to setup-employees
+  set-default-shape employees "person"
+  create-employees num-people
+    [ move-to one-of patches  ;; put turtles on patch centers
+    set size 1.5  ;; easier to see
+      set-initial-employee-vars
+      set age random life-expectancy ]
+ recolor-employees
+end
+
+to set-initial-employee-vars
+
+  set age 0
+  face one-of neighbors4
+  set life-expectancy life-expectancy-min +
+                        random (life-expectancy-max - life-expectancy-min + 1)
+  set metabolism 1 + random metabolism-max
+  set income metabolism + random Country-AWE
+  set wealth (wealth + 1)
+  set vision 1 + random max-vision
+
+end
+
+;; Set the class of the turtles -- if a turtle has less than a third
+;; the wealth of the richest turtle, color it red.  If between one
+;; and two thirds, color it green.  If over two thirds, color it blue.
+;; setup recolor based on chooser
+to recolor-employees
+  let max-income max [income] of employees
+
+ ;; when chosen, this component returns this simulation back to its original setting to provide a baseline for comparison
+  if ( Economic-System = "Original-Model" ) [ ask employees [ ifelse (income <= max-income / 2)
+        [ set color red ]
+    [ set color blue ] ] ]
+
+  if ( Economic-System = "Counterbalance" ) [ ask employees [ ifelse income <= cbe-mean
+        [ set color red ]
+           [ set color blue ] ] ]
+
+  if ( Economic-System = "Neoliberal-v-GovernmentRun" ) [ ask employees [ ifelse (income <= max-income / 2)
+        [ set color red ]
+    [ set color blue ] ] ]
+
+economic-system-selector
+end
+
+to economic-system-selector
+  let max-income max [income] of employees
+
+    if ( Economic-System = "Original-Model" ) [ ask employees [ ifelse (income <= max-income / 2)
+    [set Tax-Collected  0 set welfare 0 ]
+      [set Tax-Collected 0 ] ]]
+
+  if ( Economic-System = "Counterbalance" ) [ ask employees with [color = red][ ifelse income <= cbe-mean
+     [set income (cbe-mean ) set Tax-Collected 0  set welfare 0 ]
+      [set income income set Tax-Collected 0 set welfare 0 ]]]
+
+  if ( Economic-System = "Counterbalance" ) [ ask employees with [color = blue][ ifelse income <= cbe-mean
+  [set income (cbe-mean ) set Tax-Collected 0  set welfare 0 ]
+    [set income (income - Tax-Collected)set welfare 0 ]]]
+
+    ;; when chosen, this component allows you to vary the overall tax rate and the welfare paid to the reds
+  if ( Economic-System = "Neoliberal-v-GovernmentRun" ) [ ask employees [ ifelse (income <= max-income / 2)
+    [set income ((income + Welfare) - Tax-Collected) ]
+       [set income (income - Tax-Collected) set welfare 0 ] ] ]
+
+end
+
+;;;
+;;; GO AND HELPERS
+;;;
+
+to go ;; simulation begins
+
+if ticks >= 500 [ stop ] ;; stops the simulation after 500 weeks (ticks)
+
+  if ticks = 0 [ set initial-bottom-50-inc bottom-50-inc ]
+
+  ask employees
+    [ turn-towards-grain ]  ;; choose direction holding most grain within the employee's vision
+  harvest ;; runs the harvest procedure
+  ask employees
+    [ move-eat-age-die ] ;; asks employees to move towards grain, eat the grain, age by one week and die if they don't have enough energy
+  recolor-employees ;; employees change their color based on how much wealth they have
+
+   ask patches [ grow-grain ]
+
+  update-lorenz-and-gini ;; updates the lorenz and gini outputs
+  tick
+end
+
+to grow-grain  ;; patch procedure
+  ;; if a patch does not have it's maximum amount of grain, add
+  ;; num-grain-grown to its grain amount
+  if (grain-here < max-grain-here)
+    [ set grain-here grain-here + income-growth-volume
+      ;; if the new amount of grain on a patch is over its maximum
+      ;; capacity, set it to its maximum
+      if (grain-here > max-grain-here)
+        [ set grain-here max-grain-here ]
+      recolor-patch ]
+end
+
+;; determine the direction which is most profitable for each employee in
+;; the surrounding patches within the employees' vision
+to turn-towards-grain  ;; employee procedure
+  set heading 0
+  let best-direction 0
+  let best-amount grain-ahead
+  set heading 90
+  if (grain-ahead > best-amount)
+    [ set best-direction 90
+      set best-amount grain-ahead ]
+  set heading 180
+  if (grain-ahead > best-amount)
+    [ set best-direction 180
+      set best-amount grain-ahead ]
+  set heading 270
+  if (grain-ahead > best-amount)
+    [ set best-direction 270
+      set best-amount grain-ahead ]
+  set heading best-direction
+end
+
+to-report grain-ahead  ;; employee procedure
+  let total 0
+  let how-far 1
+  repeat vision
+    [ set total total + [grain-here] of patch-ahead how-far
+      set how-far how-far + 1 ]
+  report total
+end
+
+;; each employee harvests the grain on its patch.  if there are multiple
+;; employees on a patch, divide the grain evenly among the employees
+to harvest
+  ; have employees harvest before any employee sets the patch to 0
+  ask employees
+    [ set income floor (income + (grain-here / (count employees-here) )) ]
+  ;; set income income
+  ;; set wealth wealth - income
+
+  ;; now that the grain has been harvested, have the employees make the
+  ;; patches which they are on have no grain
+  ask employees
+    [ set grain-here 0
+      recolor-patch ]
+
+end
+
+to move-eat-age-die  ;; employee procedure
+  fd 1
+
+  set Tax-Collected (income * Tax-Collected-as-%-of-GDP)
+  set Welfare (income * Welfare-Payment-to-Reds)
+
+  ;; consume some grain according to metabolism
+  set wealth (( income - metabolism) + wealth )
+  ;; grow older
+  set age (age + 1)
+  ;; check for death conditions: if you have no grain or
+  ;; you're older than the life expectancy or if some random factor
+  ;; holds, then you "die" and are "reborn" (in fact, your variables
+  ;; are just reset to new random values)
+  if (wealth < 0) or (age >= life-expectancy)
+    [ set-initial-employee-vars ]
+end
+
+;; this procedure recomputes the value of gini-index-reserve
+;; and the points in lorenz-points for the Lorenz and Gini-Index plots
+to update-lorenz-and-gini
+  let sorted-income sort [income] of employees
+  let total-income sum sorted-income
+  let income-sum-so-far 0
+  let index 0
+  set gini-index-reserve 0
+  set lorenz-points []
+
+  ;; now actually plot the Lorenz curve -- along the way, we also
+  ;; calculate the Gini index.
+  ;; (see the Info tab for a description of the curve and measure)
+  repeat num-people [
+   set income-sum-so-far (income-sum-so-far + item index sorted-income)
+    set lorenz-points lput ((income-sum-so-far / total-income) * 100) lorenz-points
+    set index (index + 1)
+    set gini-index-reserve
+      gini-index-reserve +
+      (index / num-people) -
+      (income-sum-so-far / total-income)
+      ]
+end
+
+to-report num-of-red
+  report round count employees with [color = red]
+end
+
+to-report num-of-blue
+  report round count employees with [color = blue]
+end
+
+to-report avg-inc-red
+    report round sum [ income ] of employees with [color = red] / num-of-red
+end
+
+to-report avg-inc-blue
+    report round sum [ income ] of employees with [color = blue] / num-of-blue
+end
+
+to-report avg-inc-total
+  report (sum [income] of employees) / num-people
+end
+
+to-report red-wealth
+  report ( sum [ wealth ] of employees with [color = red] ) / count employees with [color = red]
+end
+
+to-report blue-wealth
+  report ( sum [ wealth ] of employees with [color = blue] ) / count employees with [color = blue]
+end
+
+to-report tot-income-world
+  report round sum [income] of employees
+end
+
+;; to-report tot-wealth-world
+  ;; report round sum [wealth] of employees
+;; end
+
+to-report cbe-mean
+  report round ( top-50-inc + initial-bottom-50-inc ) / num-people
+end
+
+to-report top-50-inc
+  report round sum [income] of employees with [ who > ( num-people / 2 - 1 ) ]
+end
+
+to-report bottom-50-inc
+report round sum [income] of employees with [ who < num-people / 2 ]
+end
+
+
+
+
+
+; Copyright 1998 Uri Wilensky.
+; See Info tab for full copyright and license.
+@#$#@#$#@
+GRAPHICS-WINDOW
+183
+10
+599
+427
+-1
+-1
+8.0
+1
+10
+1
+1
+1
+0
+1
+1
+1
+-25
+25
+-25
+25
+1
+1
+1
+Weeks
+30.0
+
+BUTTON
+10
+212
+86
+245
+setup
+setup
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+102
+212
+178
+245
+go
+go
+T
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+0
+
+SLIDER
+10
+44
+178
+77
+max-vision
+max-vision
+1
+15
+15.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+10
+78
+178
+111
+metabolism-max
+metabolism-max
+1
+25
+13.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+10
+10
+178
+43
+num-people
+num-people
+2
+1000
+1000.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+10
+176
+178
+209
+percent-best-land
+percent-best-land
+1
+25
+20.0
+1
+1
+%
+HORIZONTAL
+
+SLIDER
+10
+143
+178
+176
+life-expectancy-max
+life-expectancy-max
+1
+100
+82.0
+1
+1
+NIL
+HORIZONTAL
+
+PLOT
+4
+462
+256
+642
+Class Plot
+Time
+Turtles
+0.0
+50.0
+0.0
+250.0
+true
+true
+"set-plot-y-range 0 num-people" ""
+PENS
+"low" 1.0 0 -2674135 true "" "plot count turtles with [color = red]"
+"up" 1.0 0 -13345367 true "" "plot count turtles with [color = blue]"
+
+SLIDER
+609
+427
+957
+460
+income-growth-volume
+income-growth-volume
+0
+30
+15.0
+.5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+10
+111
+178
+144
+life-expectancy-min
+life-expectancy-min
+1
+100
+1.0
+1
+1
+NIL
+HORIZONTAL
+
+PLOT
+263
+462
+475
+642
+Class Histogram
+Classes
+Turtles
+0.0
+3.0
+0.0
+250.0
+false
+false
+"set-plot-y-range 0 num-people" ""
+PENS
+"default" 1.0 1 -2674135 true "" "plot-pen-reset\nset-plot-pen-color red\nplot count turtles with [color = red]\n\nset-plot-pen-color blue\nplot count turtles with [color = blue]"
+
+PLOT
+724
+462
+957
+642
+Lorenz Curve
+Pop %
+Wealth %
+0.0
+100.0
+0.0
+100.0
+false
+true
+"" ""
+PENS
+"lorenz" 1.0 0 -2674135 true "" "plot-pen-reset\nset-plot-pen-interval 100 / num-people\nplot 0\nforeach lorenz-points plot"
+"equal" 100.0 0 -16777216 true "plot 0\nplot 100" ""
+
+PLOT
+482
+463
+716
+643
+Gini-Index v. Time
+Time
+Gini
+0.0
+50.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -13345367 true "" "plot (gini-index-reserve / num-people) / 0.5"
+
+MONITOR
+11
+286
+93
+331
+No. of  Red
+num-of-red
+17
+1
+11
+
+MONITOR
+95
+286
+182
+331
+No. of  Blue
+num-of-blue
+2
+1
+11
+
+MONITOR
+11
+330
+93
+375
+Avg. Inc. Red
+round avg-inc-red
+2
+1
+11
+
+MONITOR
+95
+330
+182
+375
+Avg. Inc. Blue
+round avg-inc-blue
+2
+1
+11
+
+MONITOR
+10
+381
+182
+426
+Average Income
+round avg-inc-total
+2
+1
+11
+
+MONITOR
+608
+349
+841
+394
+Gini
+(gini-index-reserve / num-people) / 0.5
+2
+1
+11
+
+PLOT
+605
+11
+842
+161
+Total Income
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -13345367 true "" "plot round tot-income-world"
+
+CHOOSER
+606
+231
+841
+276
+Economic-System
+Economic-System
+"Original-Model" "Counterbalance" "Neoliberal-v-GovernmentRun"
+1
+
+SLIDER
+184
+427
+393
+460
+Tax-Collected-as-%-of-GDP
+Tax-Collected-as-%-of-GDP
+0.00
+1 - .01
+0.32
+.005
+1
+NIL
+HORIZONTAL
+
+MONITOR
+607
+279
+722
+324
+Income Tax
+sum [tax-collected] of employees
+0
+1
+11
+
+SLIDER
+390
+427
+599
+460
+Welfare-Payment-to-Reds
+Welfare-Payment-to-Reds
+.01
+1
+0.21
+.005
+1
+NIL
+HORIZONTAL
+
+MONITOR
+727
+279
+841
+324
+Welfare Payments
+sum [welfare] of employees
+0
+1
+11
+
+MONITOR
+605
+161
+842
+206
+Total Income
+round tot-income-world
+2
+1
+11
+
+TEXTBOX
+640
+405
+968
+424
+GDP & Business Cycle Sliders
+16
+0.0
+0
+
+TEXTBOX
+630
+210
+861
+228
+Economic System Selector
+16
+0.0
+1
+
+TEXTBOX
+642
+326
+720
+344
+Gini-Index
+16
+0.0
+1
+
+TEXTBOX
+43
+258
+193
+278
+Wealth & Class
+16
+0.0
+1
+
+MONITOR
+845
+225
+953
+270
+Top 50% Income
+top-50-inc
+2
+1
+11
+
+MONITOR
+845
+179
+953
+224
+Bottom 50% Income
+bottom-50-inc
+2
+1
+11
+
+MONITOR
+845
+89
+953
+134
+Lowest Income
+min [income] of employees
+0
+1
+11
+
+MONITOR
+845
+134
+953
+179
+Highest Income
+max [income] of employees
+2
+1
+11
+
+MONITOR
+846
+277
+953
+322
+CBE Avg Income
+cbe-mean
+2
+1
+11
+
+TEXTBOX
+855
+36
+943
+76
+CBE Wealth\nMonitors
+16
+0.0
+1
+
+TEXTBOX
+861
+324
+940
+348
+Enter AWE\n
+16
+0.0
+1
+
+INPUTBOX
+845
+346
+954
+406
+Country-AWE
+877.0
+1
+0
+Number
+
+@#$#@#$#@
+## WHAT IS IT?
+ 
+This model simulates the distribution of wealth. “The rich get richer and the poor get poorer” is a familiar saying that expresses inequity in the distribution of wealth and income. In this simulation, we see Pareto’s law, in which there is a large number of “poor” or RED people, and a few “rich” or BLUE people. The original model included a middle class, however, this class has been removed to more clearly model the Counterbalance Economics system. 
+
+## HOW IT WORKS 
+
+This model is adapted from Epstein & Axtell’s “Sugarscape” model. It uses grain instead of sugar. Each patch has an amount of grain and a grain capacity (the amount of grain it can grow). People collect grain from the patches and eat the grain to survive. The amount of grain collected is their income and how much grain each person accumulates is his or her wealth. 
+
+The model begins with a roughly equal wealth distribution. The people then wander around the landscape gathering as much grain as they can. Each person attempts to move in the direction where the most grain lies. Each cycle is termed TICK. TIME is represented as the number of ticks. During each time tick, each person eats a certain amount of grain. This amount is called their Metabolism. People also have a Life Expectancy. When their lifespan runs out, or they run out of grain, they die and produce a single offspring. The offspring has a random metabolism and a random amount of grain, ranging from the poorest person’s amount of grain to the richest person’s amount of grain (There is no inheritance of wealth).
+
+To observe the equity (or the inequity) of the distribution of wealth, a graphical tool called the Lorenz curve is utilised. We rank the population by their income and plot the percentage of the population that receives each percentage of the income (e.g. 30% of the income is received by 50% of the population). Hence the ranges on both axes are from 0% to 100%. 
+
+Another way to understand the Lorenz curve is to imagine a society of 100 people with a fixed amount of income available. An individual is 1% of the population. Rank the individuals in order of their income from greatest to least: the poorest individual would have the lowest ranking of 1 and so forth. Then plot the proportion of the rank of an individual on the y-axis and the portion of income owned by this individual and all the individuals with lower rankings on the x-axis. For example, individual Y with a ranking of 20 (20th poorest in society) would have a percentage ranking of 20% in a society of 100 people (or 100 rankings) — this is the point on the y-axis. The corresponding plot on the x-axis is the proportion of the income that this individual with ranking 20 receives along with the income received by all the individuals with lower rankings (from rankings 1 to 19). A straight line with a 45-degree incline at the origin (or slope of 1) is a Lorenz curve that represents perfect equality — everyone holds an equal part of the available income. On the other hand, should only one family or one individual hold all of the income in the population (i.e. perfect inequity), then the Lorenz curve will be a backwards “L” where 100% of the wealth is owned by the last percentage proportion of the population. In practice, the Lorenz curve falls somewhere between the straight 45-degree line and the backwards “L”. 
+
+For a numerical measurement of the inequity in the distribution of income, the Gini index (or Gini coefficient) is derived from the Lorenz curve. To calculate the Gini index, find the area between the 45-degree line of perfect equality and the Lorenz curve. Divide this quantity by the total area under the 45-degree line of perfect equality (this number is always 0.5 — the area of 45-45-90 triangle with sides of length 1). If the Lorenz curve is the 45-degree line, then the Gini index would be 0; there is no area between the Lorenz curve and the 45-degree line. If, however, the Lorenz curve is a backwards “L”, then the Gini-Index would be 1 — the area between the Lorenz curve and the 45-degree line is 0.5; this quantity divided by 0.5 is 1. Hence, equality in the distribution of income is measured on a scale of 0 to 1 — more inequity as one travels up the scale. Another way to understand (and equivalently compute) the Gini index, without reference to the Lorenz curve, is to think of it as the mean difference in income between all possible pairs of people in the population, expressed as a proportion of the average income (see Deltas, 2003 for more). 
+
+## THE COUNTERBALANCE ECONOMICS (CBE) MODEL
+The Counterbalance Economics system is the name of an alternative economic system which aims to reduce the level of inequality in any given population. 
+The Wealth Distribution model has been updated to incorporate the key elements of the 
+Counterbalance system which are: 
+1.	Paying the lowest paid workers, the AWE (Average Weekly Earnings) 
+2.	Employees being paid in CC’s are not taxed.
+3.	The AWE moves up based on income increases in the top 50 percentile.
+Note: The Counterbalance Economics model reduces inequality to almost zero, which means there is no poverty, while still allowing the rich to remain rich. 
+The outcomes achieved by the CBE model are done by complementing the economic system being used in any country. Although it is theoretically possible to run the CBE autonomously, it is not designed to work independently but rather with the existing system of any economy.  
+
+One of the goals of the update to this Agent Based Model, was to allow the simulation of any global economy which includes their economic and inequality levels and then compare those to the levels that would exist if we incorporated the CBE into their existing economic system. To achieve this, we have added the following three sliders and one chooser.
+
+Tax-Collected-as-%-of-GDP (slider) – Allows simulation of the amount of tax collected by different countries as a percentage to their GDP
+Welfare-Payment-to-Reds (slider) – Allows the simulation of the amount of welfare payments as a percentage of GDP collected 
+Wealth-Growth-Volume – Allows the simulation of the volume of growth occurring in an economy
+
+The last slider allows the simulation of the business cycle (more commonly known as “booms and busts”). A “business cycle … refers to the alternating periods of expansion and contraction in economic activity relative to the trend in the economic growth rate that the economy experiences over time” (Hubbard, p190). 
+
+Economic-System (chooser) – Allows us to choose between the “original model” that the ABM came with, the “Counterbalance” model which provides a comparison between the status quo and the addition of the CBE to that particular economic system and the “Neoliberal-v-GovernmentRun” model which allows us to simulate any global economy using the three sliders just discussed. 
+
+This is possible because all global economies have the following 3 attributes:
+•	a level of GDP
+•	a level of taxation and
+•	a level of social welfare (if no social welfare is provided, simply set the slider to zero). 
+
+For an economy to exist, there must be a market to allow the sale of goods and services. The key difference between each country is what level of control or freedom the government allows, via regulation. It can therefore be said that the key difference between all economies is their position on the level of regulation spectrum. On one end, with the most regulation, includes Keynesianism, Socialism and Communism. At the other end of the spectrum, with the least amount of regulation, we have mixed market economies and Neoliberal economies (Heywood 2013, 145). This then determines the amount of taxation that is required to pay government employees to administer the regulation and to provide the safety net being provided. This is simulated in the Wealth Distribution model with the Tax-Collected-as-%-of-GDP and the Welfare-Payment-to-Reds sliders.  
+
+For a complete overview of the Counterbalance Economics system, please go to www.UrReferendum.org.au 
+
+Heywood, A. (2013). Politics. Basingstoke: Palgrave Macmillan.
+Hubbard. (2015). Market Failure and Government Failure. In INTRODUCTORY ECONOMICS  
+
+## HOW TO USE IT 
+The PERCENT-BEST-LAND slider determines the initial density of patches that are seeded with the maximum amount of grain. This maximum is adjustable via the MAX-GRAIN variable in the SETUP procedure in the procedures window. The GRAIN-GROWTH-INTERVAL slider determines how often grain grows. The NUM-GRAIN-GROWN slider sets how much grain is grown each time GRAIN-GROWTH-INTERVAL allows grain to be grown. 
+
+The NUM-PEOPLE slider determines the initial number of people. LIFE-EXPECTANCY-MIN is the shortest number of ticks that a person can possibly live. LIFE-EXPECTANCY-MAX is the longest number of ticks that a person can possibly live. The METABOLISM-MAX slider sets the highest possible amount of grain that a person could eat per clock tick. The MAX-VISION slider is the furthest possible distance that any person could see. 
+
+GO starts the simulation. The TIME ELAPSED monitor shows the total number of clock ticks since the last setup. The CLASS PLOT shows a line plot of the number of people in each class over time. The CLASS HISTOGRAM shows the same information in the form of a histogram. The LORENZ CURVE plot shows the Lorenz curve of the population at a particular time as well as the 45-degree line of equality. The GINI-INDEX V. TIME plot shows the Gini index at the time that the Lorenz curve is drawn. The LORENZ CURVE and the GINI-INDEX V. TIME plots are updated every 5 passes through the GO procedure. 
+
+•	“No. of Red” and “No. of Blue” monitors show the number of persons in each class (poor/middle/rich).
+•	“Avg. Inc. Red” and “Avg. Inc. Blue” monitors show the average income for each class (the total earned by the group / total in the group).
+•	“Average Income” monitor shows the average income of all persons.
+•	“Total Income " monitor shows the total income in the economy.
+•	“Income Tax” monitor shows the amount of tax being deducted from the population at each tick.
+•	“Welfare Payments” monitor, show the total amount of welfare being paid 
+•	“Gini monitor” shows the level of inequality that exists in the simulation at any given period 
+•	“Lowest Income” monitor shows the amount of income received by the lowest earning employee 
+•	“Highest Income” monitor shows the amount of income received by the highest earning employee
+•	“Bottom 50% income” monitor shows the amount of income received by the bottom 50% of employees
+•	“Top 50% Income” monitor shows the amount of income received by the top 50% of employees
+•	“CBE Avg Income” monitor shows the average amount of CBE income 
+•	“Country-AWE” input box allows the input of the AWE (average weekly earnings amount)
+
+## SIMULATING AN ECONOMY
+To simulate an economy, you need to have a set of data to work with including a countries GDP, Total Tax Revenue, Welfare Payments, Gini index and the Average Weekly Earnings (AWE) for the year/s you want to simulate. 
+
+Finally, once you set the values calculated, you enter the Average Weekly Earnings for that country and year being tested and run the model several times adjusting the Income-Growth-Volume (IGV) slider until you can achieve the highest Gini and the lowest Gini index numbers in your data set. This will allow the simulation of the level of growth or lack of in the model economy. To provide further clarification of how this works, we have provided the sample data used to simulate the economies of Australia, the US, the UK, Switzerland, and Germany from 2006 to 2018 in the table below.
+
+Example: To simulate Australia, we first set our Tax-Collected to 0.27 and the welfare setting to 0.17 (2007/08 figures), enter the AWE for that year (in the Enter AWE box) and then adjust the IGV slider until we achieved a .33 Gini (highest Gini score) at the end of a simulation run. We then repeat this process adjusting the Tax-Collected to 0.285 and welfare to 0.265 (2017/18 figures) enter the AWE for that year and once again adjusted the IGV until we achieved a 0.30 Gini (lowest Gini score). We would have found the IGV setting for a country when we can achieve both the high Gini and low Gini values by only adjusting the tax-collected and welfare paid for any particular year. For Australia, we found that this occurs when the IGV is set to 7. Please note that the Gini level calculated by the Income Distribution model occurs because of running the model. This means that although the more accurate it is the better, it is ok if the model fluctuates between a Gini score of 0.31 and 0.35 for 2007/08 and between 0.28 and 0.32 for 2017/18 or .02 points on either side of the actual Gini score.
+
+Generally, we would start the IGV slider at 15 and then adjust it back towards 1, 1 increment at a time until you find the right setting. At this point, the model has been primed for that country which will allow you to test how an economy has performed in any given year as well as testing to see how it would have performed had the CBE model been added to the economy for that year 
+
+Table 1 GDP, Tax & Welfare Data for simulating the economies of Aust, US & UK
+Date	Country	   	Tax-Collected  	welfare Gini	IGV	AWE
+					payment
+					
+
+2005-06	Australia	29.4	15.71	0.30	10.5	961
+2006-07	Australia	29.5	15.87	0.31	10.5	987
+2007-08	Australia	26.8	17.05	0.33	6.0	995
+2008-09	Australia	25.5	16.87	0.30	5.5	986
+2009-10	Australia	25.3	16.56	0.32	5.5	1020
+2010-11	Australia	25.9	17.02	0.31	5.5	1053
+2011-12	Australia	26.9	17.3	0.30	6.0	1059
+2012-13	Australia	27.1	17.25	0.30	6.0	1054
+2013-14	Australia	27.3	17.78	0.32	6.0	1062
+2014-15	Australia	27.9	18.15	0.30	7.0	1053
+2015-16	Australia	27.6	17.41	0.30	7.0	1054
+2016-17	Australia	28.5	16.71	0.30	9.0	1045
+2017-18	Australia	28.7	16.71	0.30	9.0	1041
+Average 	 		27.4	17.0	 	7.2	 
+2005-06	US		26.8	15.5	0.41	4.5	1120
+2006-07	US		26.8	15.7	0.41	4.5	1142
+2007-08	US		25.7	16.3	0.41	3.5	1138
+2008-09	US		23.0	18.4	0.41	1.0	1148
+2009-10	US		23.5	19.1	0.40	1.0	1159
+2010-11	US		23.9	18.8	0.40	1.5	1160
+2011-12	US		24.0	18.5	0.40	1.5	1170
+2012-13	US		25.6	18.5	0.40	2.5	1164
+2013-14	US		25.9	18.5	0.39	3.0	1182
+2014-15	US		26.2	18.5	0.39	3.0	1211
+2015-16	US		25.8	18.7	0.40	2.5	1213
+2016-17	US		26.7	18.4	0.39	3.0	1226
+2017-18	US		24.4	18.2	0.39	2.5	1238
+Average 	 	25.2	17.9	 	2.6	 
+2005-06	UK.......	32.8	19	0.36	6.0	874
+2006-07	UK.......	32.8	20	0.37	6.0	899
+2007-08	UK.......	32.1	21	0.36	4.5	877
+2008-09	UK.......	31.1	23	0.36	3.0	879
+2009-10	UK.......	32.1	23	0.35	3.5	881
+2010-11	UK.......	32.7	23	0.34	4.0	866
+2011-12	UK.......	32.1	23	0.34	4.0	854
+2012-13	UK.......	32.1	22	0.35	4.0	865
+2013-14	UK.......	32.1	22	0.35	4.0	868
+2014-15	UK.......	32.4	22	0.35	4.5	876
+2015-16	UK.......	32.6	21	0.35	5.0	886
+2016-17	UK.......	32.8	20	0.36	5.5	894
+2017-18	UK.......	32.9	20	0.37	5.5	897
+Average 	 	32.4	21.5	 	4.6	 
+2005-06	Switzerland	26.5	15	0.32	8.5	1184
+2006-07	Switzerland	26.2	15	0.33	8.5	1201
+2007-08	Switzerland	26.6	14	0.32	9.0	1208
+2008-09	Switzerland	27.0	16	0.31	9.5	1232
+2009-10	Switzerland	26.6	16	0.31	9.5	1235
+2010-11	Switzerland	26.9	16	0.30	10.0	1237
+2011-12	Switzerland	26.9	16	0.30	10.0	1259
+2012-13	Switzerland	27.0	16	0.31	10.0	1278
+2013-14	Switzerland	26.9	16	0.31	10.0	1280
+2014-15	Switzerland	27.6	17	0.31	10.0	1279
+2015-16	Switzerland	27.7	17	0.32	10.0	1276
+2016-17	Switzerland	28.4	17	0.31	10.0	1272
+2017-18	Switzerland	28.1	17	0.31	10.0	1272
+Average 	 		27.1	16.0	 	9.6	 
+2005-06	Germany		34.9	25	0.31	5.5	890
+2006-07	Germany		35.4	24	0.31	6.0	887
+2007-08	Germany		35.8	24	0.30	7.0	891
+2008-09	Germany		36.7	27	0.31	5.0	892
+2009-10	Germany		35.5	26	0.30	5.0	899
+2010-11	Germany		36.1	25	0.30	7.5	918
+2011-12	Germany		36.8	25	0.29	8.5	931
+2012-13	Germany		37.0	25	0.30	8.5	940
+2013-14	Germany		36.8	25	0.29	8.5	956
+2014-15	Germany		37.3	25	0.31	8.5	978
+2015-16	Germany		37.7	25	0.31	8.5	993
+2016-17	Germany		37.8	25	0.29	9.0	1003
+2017-18	Germany		38.5	25	0.29	10.5	1018
+Average 	 		36.6	25.1	 	7.5	
+
+Note: data is easier to read in edit mode or copied into Excel
+
+## CBE COMPARISON SUMMARY 
+The goal for updating the Wealth Distribution model was to simulate any global economic system to allow a comparison between what is and how any economy is likely to be affected with the introduction of the CBE system. 
+
+To achieve this we implemented the use of sliders to simulate the level of GDP, Taxation, and Welfare spending for any economy along with a method for approximating the business cycle by ensuring that the model is able to replicate the highest and lowest Gini index value for the countries being studied.
+
+Based on the simulation, introducing the CBE into the Australian, UK, US, Swiss or German economies would increase the overall GDP of those countries by around 5 per cent and the level of inequality would be reduced from an average of 0.33 down to an average of 0.08. Further research will be conducted which includes a pilot to test the robustness of the results achieved in the simulation.
+The simulation shows that in the first month of implementation, there will be an initial burst of activity followed by smoothing out thereafter to an average level of 5 per cent above the current GDP for the five countries in the study.
+## THINGS TO NOTICE 
+Notice the distribution of income. Are the classes equal? 
+This model usually demonstrates Pareto’s Law, in which most of the people are poor and a few are rich. Why does this happen? Do poor families seem to stay poor? What about the rich people?
+ 
+Watch the CLASS PLOT to see how long it takes for the classes to reach stable values.  
+As time (ticks) passes, does the distribution get more equalised or more skewed? (Hint: observe the Gini index plot)
+
+Try to find resources from the U.S. Government Census Bureau for the U.S.’s Gini coefficient. Are the Gini coefficients that you calculate from the model comparable to those of the Census Bureau? Why or why not? 
+Is there a trend in the plotting of the Gini index with respect to time? Does the plot oscillate? Or does it stabilise to a certain number? 
+
+## THINGS TO TRY 
+Are there any settings that do not result in a demonstration of Pareto’s Law? 
+How much does the LIFE-EXPECTANCY-MAX matter? 
+Change the value of the MAX-GRAIN variable (in the setup procedure in the Code tab). Do outcomes differ?
+ 
+Experiment with the PERCENT-BEST-LAND and NUM-PEOPLE sliders. How do these affect the outcome of the distribution of wealth? 
+Try having all the people start in one location. See what happens. 
+Try setting everyone’s initial wealth as being equal. Does the initial endowment of an individual still arrive at an unequal distribution in income? Is it less so when setting random initial income for individuals?
+ 
+Try setting all the individuals’ income and vision to being equal. Do you still arrive at an unequal distribution of income? Is it more equal in the measure of the Gini index than with random endowments of vision? 
+
+## EXTENDING THE MODEL 
+Add a switch or slider which has the patches grow back all or a percentage of their grain capacity, rather than just one unit of grain. 
+Allow the grain to give an advantage or disadvantage to its carrier, such as every time some grain is eaten or harvested, pollution is created.
+ 
+Would this model be the same if the income were randomly distributed (as opposed to a gradient)? Try different landscapes, making SETUP buttons for each new landscape. 
+Try allowing metabolism or vision or another characteristic to be inherited. Will we see any sort of evolution? Will the “fittest” survive? If not, why not? 
+We said above that “there is no inheritance of wealth” in the model, but that is not entirely true. New babies are born (termed “turtles” in ABM) in the same location as their parents. If grain is plentiful relative to the population at this location, they inherit a good starting situation. Try moving the turtles to a random patch when they are born. Does that lead to a more equitable distribution of wealth?
+ 
+Try adding in seasons into the model. That is to say: have the grain grow better in a section of the landscape during certain times and worse at others. 
+How could you change the model to achieve wealth equality? 
+The way the procedures are set up now, one person will sometimes follow another. You can see this by setting the number of people relatively low, such as 50 or 100, and having a long-life expectancy. Why does this phenomenon happen? Try adding code to prevent this from occurring. (Hint: When and how do people check to see which direction they should move in?) 
+
+## NETLOGO FEATURES 
+Examine how the landscape of color is created — note the use of the scale-color reporter. Each patch is given a value, and scale-color reports a color for each patch that is scaled according to its value. 
+Note the use of lists in drawing the Lorenz Curve and computing the Gini index. 
+CREDITS AND REFERENCES 
+This model is based on a model described in Epstein, J. & Axtell R. (1996). Growing Artificial Societies: Social Science from the Bottom Up. Washington, DC: Brookings Institution Press. 
+
+For an explanation of Pareto’s Law, see https://en.wikipedia.org/wiki/Pareto_principle. 
+For more on the calculation of the Gini index see: 
+•	Deltas, George (2003). The Small-Sample Bias of the Gini Coefficient: Results and Implications for Empirical Research. The Review of Economics and Statistics, February 2003, 85(1): 226-234. 
+In particular, note that if one is calculating the Gini index of a sample for the purpose of estimating the value for a larger population, a small correction factor to the method used here may be needed for small samples. 
+HOW TO CITE 
+If you mention this model or the NetLogo software in a publication, we ask that you include the citations below. 
+For the model itself: 
+•	Wilensky, U. (1998). NetLogo Wealth Distribution model. http://ccl.northwestern.edu/netlogo/models/WealthDistribution. Center for Connected Learning and Computer-Based Modeling, Northwestern University, Evanston, IL. 
+Please cite the NetLogo software as: 
+•	Wilensky, U. (1999). NetLogo. http://ccl.northwestern.edu/netlogo/. Center for Connected Learning and Computer-Based Modeling, Northwestern University, Evanston, IL. 
+COPYRIGHT AND LICENSE 
+Copyright 1998 Uri Wilensky. 
+ 
+This work is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 3.0 License. To view a copy of this license, visit https://creativecommons.org/licenses/by-nc-sa/3.0/ or send a letter to Creative Commons, 559 Nathan Abbott Way, Stanford, California 94305, USA. 
+Commercial licenses are also available. To inquire about commercial licenses, please contact Uri Wilensky at uri@northwestern.edu. 
+
+This model was created as part of the project: CONNECTED MATHEMATICS: MAKING SENSE OF COMPLEX PHENOMENA THROUGH BUILDING OBJECT-BASED PARALLEL MODELS (OBPML). The project gratefully acknowledges the support of the National Science Foundation (Applications of Advanced Technologies Program) – grant numbers RED #9552950 and REC #9632612. 
+This model was converted to NetLogo as part of the projects: PARTICIPATORY SIMULATIONS: NETWORK-BASED DESIGN FOR SYSTEMS LEARNING IN CLASSROOMS and/or INTEGRATED SIMULATION AND MODELING ENVIRONMENT. The project gratefully acknowledges the support of the National Science Foundation (REPP & ROLE programs) – grant numbers REC #9814682 and REC-0126227. Converted from StarLogoT to NetLogo, 2001. NetLogo, 2001
+@#$#@#$#@
+default
+true
+0
+Polygon -7500403 true true 150 5 40 250 150 205 260 250
+
+airplane
+true
+0
+Polygon -7500403 true true 150 0 135 15 120 60 120 105 15 165 15 195 120 180 135 240 105 270 120 285 150 270 180 285 210 270 165 240 180 180 285 195 285 165 180 105 180 60 165 15
+
+arrow
+true
+0
+Polygon -7500403 true true 150 0 0 150 105 150 105 293 195 293 195 150 300 150
+
+box
+false
+0
+Polygon -7500403 true true 150 285 285 225 285 75 150 135
+Polygon -7500403 true true 150 135 15 75 150 15 285 75
+Polygon -7500403 true true 15 75 15 225 150 285 150 135
+Line -16777216 false 150 285 150 135
+Line -16777216 false 150 135 15 75
+Line -16777216 false 150 135 285 75
+
+bug
+true
+0
+Circle -7500403 true true 96 182 108
+Circle -7500403 true true 110 127 80
+Circle -7500403 true true 110 75 80
+Line -7500403 true 150 100 80 30
+Line -7500403 true 150 100 220 30
+
+butterfly
+true
+0
+Polygon -7500403 true true 150 165 209 199 225 225 225 255 195 270 165 255 150 240
+Polygon -7500403 true true 150 165 89 198 75 225 75 255 105 270 135 255 150 240
+Polygon -7500403 true true 139 148 100 105 55 90 25 90 10 105 10 135 25 180 40 195 85 194 139 163
+Polygon -7500403 true true 162 150 200 105 245 90 275 90 290 105 290 135 275 180 260 195 215 195 162 165
+Polygon -16777216 true false 150 255 135 225 120 150 135 120 150 105 165 120 180 150 165 225
+Circle -16777216 true false 135 90 30
+Line -16777216 false 150 105 195 60
+Line -16777216 false 150 105 105 60
+
+car
+false
+0
+Polygon -7500403 true true 300 180 279 164 261 144 240 135 226 132 213 106 203 84 185 63 159 50 135 50 75 60 0 150 0 165 0 225 300 225 300 180
+Circle -16777216 true false 180 180 90
+Circle -16777216 true false 30 180 90
+Polygon -16777216 true false 162 80 132 78 134 135 209 135 194 105 189 96 180 89
+Circle -7500403 true true 47 195 58
+Circle -7500403 true true 195 195 58
+
+circle
+false
+0
+Circle -7500403 true true 0 0 300
+
+circle 2
+false
+0
+Circle -7500403 true true 0 0 300
+Circle -16777216 true false 30 30 240
+
+cow
+false
+0
+Polygon -7500403 true true 200 193 197 249 179 249 177 196 166 187 140 189 93 191 78 179 72 211 49 209 48 181 37 149 25 120 25 89 45 72 103 84 179 75 198 76 252 64 272 81 293 103 285 121 255 121 242 118 224 167
+Polygon -7500403 true true 73 210 86 251 62 249 48 208
+Polygon -7500403 true true 25 114 16 195 9 204 23 213 25 200 39 123
+
+cylinder
+false
+0
+Circle -7500403 true true 0 0 300
+
+dot
+false
+0
+Circle -7500403 true true 90 90 120
+
+face happy
+false
+0
+Circle -7500403 true true 8 8 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Polygon -16777216 true false 150 255 90 239 62 213 47 191 67 179 90 203 109 218 150 225 192 218 210 203 227 181 251 194 236 217 212 240
+
+face neutral
+false
+0
+Circle -7500403 true true 8 7 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Rectangle -16777216 true false 60 195 240 225
+
+face sad
+false
+0
+Circle -7500403 true true 8 8 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Polygon -16777216 true false 150 168 90 184 62 210 47 232 67 244 90 220 109 205 150 198 192 205 210 220 227 242 251 229 236 206 212 183
+
+fish
+false
+0
+Polygon -1 true false 44 131 21 87 15 86 0 120 15 150 0 180 13 214 20 212 45 166
+Polygon -1 true false 135 195 119 235 95 218 76 210 46 204 60 165
+Polygon -1 true false 75 45 83 77 71 103 86 114 166 78 135 60
+Polygon -7500403 true true 30 136 151 77 226 81 280 119 292 146 292 160 287 170 270 195 195 210 151 212 30 166
+Circle -16777216 true false 215 106 30
+
+flag
+false
+0
+Rectangle -7500403 true true 60 15 75 300
+Polygon -7500403 true true 90 150 270 90 90 30
+Line -7500403 true 75 135 90 135
+Line -7500403 true 75 45 90 45
+
+flower
+false
+0
+Polygon -10899396 true false 135 120 165 165 180 210 180 240 150 300 165 300 195 240 195 195 165 135
+Circle -7500403 true true 85 132 38
+Circle -7500403 true true 130 147 38
+Circle -7500403 true true 192 85 38
+Circle -7500403 true true 85 40 38
+Circle -7500403 true true 177 40 38
+Circle -7500403 true true 177 132 38
+Circle -7500403 true true 70 85 38
+Circle -7500403 true true 130 25 38
+Circle -7500403 true true 96 51 108
+Circle -16777216 true false 113 68 74
+Polygon -10899396 true false 189 233 219 188 249 173 279 188 234 218
+Polygon -10899396 true false 180 255 150 210 105 210 75 240 135 240
+
+house
+false
+0
+Rectangle -7500403 true true 45 120 255 285
+Rectangle -16777216 true false 120 210 180 285
+Polygon -7500403 true true 15 120 150 15 285 120
+Line -16777216 false 30 120 270 120
+
+leaf
+false
+0
+Polygon -7500403 true true 150 210 135 195 120 210 60 210 30 195 60 180 60 165 15 135 30 120 15 105 40 104 45 90 60 90 90 105 105 120 120 120 105 60 120 60 135 30 150 15 165 30 180 60 195 60 180 120 195 120 210 105 240 90 255 90 263 104 285 105 270 120 285 135 240 165 240 180 270 195 240 210 180 210 165 195
+Polygon -7500403 true true 135 195 135 240 120 255 105 255 105 285 135 285 165 240 165 195
+
+line
+true
+0
+Line -7500403 true 150 0 150 300
+
+line half
+true
+0
+Line -7500403 true 150 0 150 150
+
+pentagon
+false
+0
+Polygon -7500403 true true 150 15 15 120 60 285 240 285 285 120
+
+person
+false
+0
+Circle -7500403 true true 110 5 80
+Polygon -7500403 true true 105 90 120 195 90 285 105 300 135 300 150 225 165 300 195 300 210 285 180 195 195 90
+Rectangle -7500403 true true 127 79 172 94
+Polygon -7500403 true true 195 90 240 150 225 180 165 105
+Polygon -7500403 true true 105 90 60 150 75 180 135 105
+
+plant
+false
+0
+Rectangle -7500403 true true 135 90 165 300
+Polygon -7500403 true true 135 255 90 210 45 195 75 255 135 285
+Polygon -7500403 true true 165 255 210 210 255 195 225 255 165 285
+Polygon -7500403 true true 135 180 90 135 45 120 75 180 135 210
+Polygon -7500403 true true 165 180 165 210 225 180 255 120 210 135
+Polygon -7500403 true true 135 105 90 60 45 45 75 105 135 135
+Polygon -7500403 true true 165 105 165 135 225 105 255 45 210 60
+Polygon -7500403 true true 135 90 120 45 150 15 180 45 165 90
+
+square
+false
+0
+Rectangle -7500403 true true 30 30 270 270
+
+square 2
+false
+0
+Rectangle -7500403 true true 30 30 270 270
+Rectangle -16777216 true false 60 60 240 240
+
+star
+false
+0
+Polygon -7500403 true true 151 1 185 108 298 108 207 175 242 282 151 216 59 282 94 175 3 108 116 108
+
+target
+false
+0
+Circle -7500403 true true 0 0 300
+Circle -16777216 true false 30 30 240
+Circle -7500403 true true 60 60 180
+Circle -16777216 true false 90 90 120
+Circle -7500403 true true 120 120 60
+
+tree
+false
+0
+Circle -7500403 true true 118 3 94
+Rectangle -6459832 true false 120 195 180 300
+Circle -7500403 true true 65 21 108
+Circle -7500403 true true 116 41 127
+Circle -7500403 true true 45 90 120
+Circle -7500403 true true 104 74 152
+
+triangle
+false
+0
+Polygon -7500403 true true 150 30 15 255 285 255
+
+triangle 2
+false
+0
+Polygon -7500403 true true 150 30 15 255 285 255
+Polygon -16777216 true false 151 99 225 223 75 224
+
+truck
+false
+0
+Rectangle -7500403 true true 4 45 195 187
+Polygon -7500403 true true 296 193 296 150 259 134 244 104 208 104 207 194
+Rectangle -1 true false 195 60 195 105
+Polygon -16777216 true false 238 112 252 141 219 141 218 112
+Circle -16777216 true false 234 174 42
+Rectangle -7500403 true true 181 185 214 194
+Circle -16777216 true false 144 174 42
+Circle -16777216 true false 24 174 42
+Circle -7500403 false true 24 174 42
+Circle -7500403 false true 144 174 42
+Circle -7500403 false true 234 174 42
+
+turtle
+true
+0
+Polygon -10899396 true false 215 204 240 233 246 254 228 266 215 252 193 210
+Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105 225 105 210 105
+Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
+Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
+Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
+Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
+
+wheel
+false
+0
+Circle -7500403 true true 3 3 294
+Circle -16777216 true false 30 30 240
+Line -7500403 true 150 285 150 15
+Line -7500403 true 15 150 285 150
+Circle -7500403 true true 120 120 60
+Line -7500403 true 216 40 79 269
+Line -7500403 true 40 84 269 221
+Line -7500403 true 40 216 269 79
+Line -7500403 true 84 40 221 269
+
+x
+false
+0
+Polygon -7500403 true true 270 75 225 30 30 225 75 270
+Polygon -7500403 true true 30 75 75 30 270 225 225 270
+@#$#@#$#@
+NetLogo 6.1.1
+@#$#@#$#@
+@#$#@#$#@
+@#$#@#$#@
+<experiments>
+  <experiment name="UK2006Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="874"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.19"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2006CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="874"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.19"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2007Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="899"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.195"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2007CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="899"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.195"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2008Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="877"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2008CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="877"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2009Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.31"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="879"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.23"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2009CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="3"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.31"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="879"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.23"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2010Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="3.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="881"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.235"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2010CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="3.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="881"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.235"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2011Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.325"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="866"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.23"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2011CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.325"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="866"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.23"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2012Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="854"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.23"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2012CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="854"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.23"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2013Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="865"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.225"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2013CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="865"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.225"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2014Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="868"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2014CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="868"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2015Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.325"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="876"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.215"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2015CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.325"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="876"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.215"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2016Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.325"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="886"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2016CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.325"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="886"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2017Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="894"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.205"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2017CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="894"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.205"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2018Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="897"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.205"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2018CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.33"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="897"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.205"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2006Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.265"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1184"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.155"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2006CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.265"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1184"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.155"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2007Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.26"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1201"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2007CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.26"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1201"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2008Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.265"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1208"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.145"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2008CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.265"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1208"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.145"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2009Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1232"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2009CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1232"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2010Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.265"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1235"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.155"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2010CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.265"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1235"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.155"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2011Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1237"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.155"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2011CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1237"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.155"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2012Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1259"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2012CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1259"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2013Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1278"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2013CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1278"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2014Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1280"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2014CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1280"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.16"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2015Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.275"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1279"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.165"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2015CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.275"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1279"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.165"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2016Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.275"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1276"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.17"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2016CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.275"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1276"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.17"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2017Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.285"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1272"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.17"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2017CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.285"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1272"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.17"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2018Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.28"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1272"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.165"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Swiss2018CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.28"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1272"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.165"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2006Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.35"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="890"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2006CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.35"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="890"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2007Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.355"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="887"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.24"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2007CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.355"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="887"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.24"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2008Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="7"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.36"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="891"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.245"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2008CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="7"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.36"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="891"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.245"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2009Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.365"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="892"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2009CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.365"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="892"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2010Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.355"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="899"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.26"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2010CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.355"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="899"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.26"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2011Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="7.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.36"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="918"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2011CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="7.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.36"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="918"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2012Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.37"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="931"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.245"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2012CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.37"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="931"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.245"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2013Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.37"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="940"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2013CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.37"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="940"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2014Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.37"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="956"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2014CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.37"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="956"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2015Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.375"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="978"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2015CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.375"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="978"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.25"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2016Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.375"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="993"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.255"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2016CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="8.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.375"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="993"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.255"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2017Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.38"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1003"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.255"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2017CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="9"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.38"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1003"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.255"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2018Neo" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.385"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1018"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.255"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="DE2018CBE" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="10.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.385"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1018"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.255"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Aus2012Neo2" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1059"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.175"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="Aus2012CBE2" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.27"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1059"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.175"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="US2011Neo2" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.24"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1160"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.19"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="US2011CBE2" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="1.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.24"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1160"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.19"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2008Neo2" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1160"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2008Neo3" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="3.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1160"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2008Neo4" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="1160"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2008Neo5" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Neoliberal-v-GovernmentRun&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="877"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="22"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="UK2008CBE5" repetitions="5" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>round tot-income-world</metric>
+    <metric>(gini-index-reserve / num-people) / 0.5</metric>
+    <enumeratedValueSet variable="income-growth-volume">
+      <value value="4.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-max">
+      <value value="82"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Tax-Collected-as-%-of-GDP">
+      <value value="0.32"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="metabolism-max">
+      <value value="13"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Economic-System">
+      <value value="&quot;Counterbalance&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Country-AWE">
+      <value value="877"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-best-land">
+      <value value="20"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="Welfare-Payment-to-Reds">
+      <value value="0.21"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-vision">
+      <value value="15"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="life-expectancy-min">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="num-people">
+      <value value="1000"/>
+    </enumeratedValueSet>
+  </experiment>
+</experiments>
+@#$#@#$#@
+@#$#@#$#@
+default
+0.0
+-0.2 0 0.0 1.0
+0.0 1 1.0 0.0
+0.2 0 0.0 1.0
+link direction
+true
+0
+Line -7500403 true 150 150 30 225
+Line -7500403 true 150 150 270 225
+@#$#@#$#@
+0
+@#$#@#$#@
